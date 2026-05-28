@@ -1,5 +1,4 @@
 import json
-import sqlite3
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -8,16 +7,22 @@ from pydantic import BaseModel, Field
 
 from app.database import init_db
 from app.importer import csv_template, parse_csv_bytes
+from app.jobs import enqueue, get_job, list_jobs
 from app.models import ReviewStatus, ReviewUpdate, TaskType, TrainingRecordCreate
 from app.service import export_approved, insert_training_record, is_duplicate_error, list_records, review_record, stats
 from app.synthetic_generator import build_generation_prompt, parse_jsonl_candidates, validate_candidates
 
-app = FastAPI(title="Model Auto Trainer", version="0.3.0")
+app = FastAPI(title="Model Auto Trainer", version="0.4.0")
 
 
 class SyntheticJsonlIngestRequest(BaseModel):
     jsonl_text: str = Field(..., min_length=1)
     store_invalid: bool = False
+
+
+class JobCreateRequest(BaseModel):
+    job_type: str
+    payload: dict
 
 
 @app.on_event("startup")
@@ -137,6 +142,26 @@ def import_csv(
         "rejected": rejected,
         "rejected_rows": rejected_rows,
     }
+
+
+# --- Automation API (Job queue) ---
+
+@app.post("/jobs")
+def create_job(req: JobCreateRequest) -> dict:
+    return enqueue(req.job_type, req.payload)
+
+
+@app.get("/jobs")
+def api_list_jobs(status: Optional[str] = None, limit: int = 50) -> list[dict]:
+    return list_jobs(status=status, limit=limit)
+
+
+@app.get("/jobs/{job_id}")
+def api_get_job(job_id: int) -> dict:
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.post("/export/approved")
