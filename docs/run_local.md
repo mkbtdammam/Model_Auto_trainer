@@ -18,13 +18,7 @@ Windows PowerShell:
 pip install -r requirements.txt
 ```
 
-## 3. Run smoke test
-
-```bash
-python scripts/smoke_test.py
-```
-
-## 4. Start API
+## 3. Start API
 
 ```bash
 uvicorn app.main:app --reload
@@ -32,59 +26,48 @@ uvicorn app.main:app --reload
 
 Open:
 
-```text
-http://127.0.0.1:8000/docs
-```
+- Swagger: `http://127.0.0.1:8000/docs`
+- Reviewer UI: `http://127.0.0.1:8000/ui`
 
-## 5. Test health endpoint
+## 4. Bulk CSV import
+
+1) Download CSV template:
 
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/import/template > template.csv
 ```
 
-Expected:
+2) Edit the CSV and import it:
 
-```json
-{"status":"ok"}
+```bash
+curl -X POST "http://127.0.0.1:8000/import/csv?forced_status=needs_review" -F "file=@template.csv"
 ```
 
-## 6. Generate a synthetic prompt
+## 5. Synthetic generation cycle
 
-Use the Swagger page or call:
+1) Get prompt:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/synthetic/prompt?task_type=dialect_generation&seed_text=നീ%20ഇന്ന്%20വീട്ടിലാണോ?&count=5"
 ```
 
-## 7. Ingest synthetic JSONL back into the system
+2) Generate JSONL with your generator model.
 
-Paste JSONL into Swagger:
+3) Ingest JSONL:
 
-- `POST /synthetic/ingest-jsonl`
-
-Or use the included script:
+Use Swagger `POST /synthetic/ingest-jsonl` or run:
 
 ```bash
 python scripts/ingest_example.py
 ```
 
-Validated synthetic candidates are stored as `needs_review`.
+## 6. Approve and export
 
-## 8. Approve and export
+Approve/reject in the Reviewer UI:
 
-1. List records waiting for review:
+- `http://127.0.0.1:8000/ui/review?status=needs_review`
 
-```bash
-curl "http://127.0.0.1:8000/records?status=needs_review&limit=50"
-```
-
-2. Approve a record:
-
-```bash
-curl -X PATCH "http://127.0.0.1:8000/records/1/review" -H "Content-Type: application/json" -d '{"status":"approved","reviewer":"native_1"}'
-```
-
-3. Export approved:
+Then export approved:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/export/approved"
