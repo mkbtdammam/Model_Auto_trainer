@@ -2,17 +2,17 @@ import json
 import sqlite3
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from app.database import get_connection, init_db, row_to_dict
-from app.exporter import approved_export_path, to_training_jsonl
+from app.database import init_db
+from app.importer import csv_template, parse_csv_bytes
 from app.models import ReviewStatus, ReviewUpdate, TaskType, TrainingRecordCreate
+from app.service import export_approved, insert_training_record, is_duplicate_error, list_records, review_record, stats
 from app.synthetic_generator import build_generation_prompt, parse_jsonl_candidates, validate_candidates
-from app.validation import detect_script, duplicate_key, validate_record
 
-
-app = FastAPI(title="Model Auto Trainer", version="0.2.0")
+app = FastAPI(title="Model Auto Trainer", version="0.3.0")
 
 
 class SyntheticJsonlIngestRequest(BaseModel):
@@ -30,75 +30,27 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-def insert_training_record(payload: TrainingRecordCreate, forced_status: Optional[ReviewStatus] = None) -> dict:
-    script = payload.script if payload.script != "unknown" else detect_script(payload.input_text)
-    quality_score, validation_errors = validate_record(payload.task_type, payload.input_text, payload.output_text)
-    status = forced_status or (ReviewStatus.needs_review if validation_errors else ReviewStatus.raw)
-    dkey = duplicate_key(payload.input_text, payload.output_text)
-
-    sql = (
-        "INSERT INTO training_records "
-        "(task_type,input_text,output_text,dialect,source_type,script,sub_region,tone,domain,"
-        "speaker_age_group,notes,status,quality_score,validation_errors,duplicate_key) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-    )
-
-    values = (
-        payload.task_type.value,
-        payload.input_text.strip(),
-        payload.output_text.strip() if payload.output_text else None,
-        payload.dialect,
-        payload.source_type,
-        script,
-        payload.sub_region,
-        payload.tone,
-        payload.domain,
-        payload.speaker_age_group,
-        payload.notes,
-        status.value,
-        quality_score,
-        json.dumps(validation_errors, ensure_ascii=False),
-        dkey,
-    )
-
-    with get_connection() as conn:
-        cursor = conn.execute(sql, values)
-        row = conn.execute("SELECT * FROM training_records WHERE id = ?", (cursor.lastrowid,)).fetchone()
-        return row_to_dict(row)
-
-
 @app.post("/records")
 def create_record(payload: TrainingRecordCreate) -> dict:
     try:
         return insert_training_record(payload)
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail="Duplicate record detected")
+    except Exception as exc:
+        if is_duplicate_error(exc):
+            raise HTTPException(status_code=409, detail="Duplicate record detected")
+        raise
 
 
 @app.get("/records")
-def list_records(status: Optional[ReviewStatus] = Query(default=None), limit: int = Query(default=50, ge=1, le=500)) -> list[dict]:
-    with get_connection() as conn:
-        if status:
-            rows = conn.execute("SELECT * FROM training_records WHERE status = ? ORDER BY id DESC LIMIT ?", (status.value, limit)).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM training_records ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    return [row_to_dict(row) for row in rows]
+def api_list_records(status: Optional[ReviewStatus] = Query(default=None), limit: int = Query(default=50, ge=1, le=500)) -> list[dict]:
+    return list_records(status=status, limit=limit)
 
 
 @app.patch("/records/{record_id}/review")
-def review_record(record_id: int, payload: ReviewUpdate) -> dict:
-    with get_connection() as conn:
-        existing = conn.execute("SELECT * FROM training_records WHERE id = ?", (record_id,)).fetchone()
-        if not existing:
-            raise HTTPException(status_code=404, detail="Record not found")
-
-        new_output = payload.corrected_output_text if payload.corrected_output_text is not None else existing["output_text"]
-        conn.execute(
-            "UPDATE training_records SET status=?, reviewer=?, notes=COALESCE(?, notes), output_text=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (payload.status.value, payload.reviewer, payload.notes, new_output, record_id),
-        )
-        row = conn.execute("SELECT * FROM training_records WHERE id = ?", (record_id,)).fetchone()
-    return row_to_dict(row)
+def api_review_record(record_id: int, payload: ReviewUpdate) -> dict:
+    try:
+        return review_record(record_id, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Record not found")
 
 
 @app.post("/synthetic/prompt")
@@ -133,8 +85,11 @@ def ingest_synthetic_jsonl(payload: SyntheticJsonlIngestRequest) -> dict:
         record_payload = candidate.to_record_create()
         try:
             inserted.append(insert_training_record(record_payload, forced_status=ReviewStatus.needs_review))
-        except sqlite3.IntegrityError:
-            duplicates += 1
+        except Exception as exc:
+            if is_duplicate_error(exc):
+                duplicates += 1
+            else:
+                raise
 
     return {
         "received": len(candidates),
@@ -146,18 +101,56 @@ def ingest_synthetic_jsonl(payload: SyntheticJsonlIngestRequest) -> dict:
     }
 
 
+@app.get("/import/template", response_class=PlainTextResponse)
+def import_template() -> str:
+    return csv_template()
+
+
+@app.post("/import/csv")
+def import_csv(
+    file: UploadFile = File(...),
+    forced_status: ReviewStatus = Query(default=ReviewStatus.needs_review),
+) -> dict:
+    data = file.file.read()
+    items = parse_csv_bytes(data)
+
+    inserted = 0
+    duplicates = 0
+    rejected = 0
+    rejected_rows: list[dict] = []
+
+    for idx, item in enumerate(items, start=1):
+        try:
+            insert_training_record(item, forced_status=forced_status)
+            inserted += 1
+        except Exception as exc:
+            if is_duplicate_error(exc):
+                duplicates += 1
+            else:
+                rejected += 1
+                rejected_rows.append({"row": idx, "error": str(exc)})
+
+    return {
+        "received": len(items),
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "rejected": rejected,
+        "rejected_rows": rejected_rows,
+    }
+
+
 @app.post("/export/approved")
-def export_approved() -> dict:
-    with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM training_records WHERE status = 'approved' ORDER BY id ASC").fetchall()
-        records = [row_to_dict(row) for row in rows]
-    path = approved_export_path()
-    count = to_training_jsonl(records, path)
-    return {"exported_records": count, "path": str(path)}
+def api_export_approved() -> dict:
+    count, path = export_approved()
+    return {"exported_records": count, "path": path}
 
 
 @app.get("/stats")
-def stats() -> dict:
-    with get_connection() as conn:
-        rows = conn.execute("SELECT status, COUNT(*) as count FROM training_records GROUP BY status").fetchall()
-    return {row["status"]: row["count"] for row in rows}
+def api_stats() -> dict:
+    return stats()
+
+
+# Minimal reviewer UI
+from app.ui import router as ui_router
+
+app.include_router(ui_router)
