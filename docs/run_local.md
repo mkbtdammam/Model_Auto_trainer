@@ -56,6 +56,38 @@ Use the Swagger page or call:
 curl -X POST "http://127.0.0.1:8000/synthetic/prompt?task_type=dialect_generation&seed_text=നീ%20ഇന്ന്%20വീട്ടിലാണോ?&count=5"
 ```
 
-Copy the returned prompt into your selected LLM or Hugging Face generator.
+## 7. Ingest synthetic JSONL back into the system
 
-The returned JSONL must then be validated and sent to native-speaker review before training.
+Paste JSONL into Swagger:
+
+- `POST /synthetic/ingest-jsonl`
+
+Or use the included script:
+
+```bash
+python scripts/ingest_example.py
+```
+
+Validated synthetic candidates are stored as `needs_review`.
+
+## 8. Approve and export
+
+1. List records waiting for review:
+
+```bash
+curl "http://127.0.0.1:8000/records?status=needs_review&limit=50"
+```
+
+2. Approve a record:
+
+```bash
+curl -X PATCH "http://127.0.0.1:8000/records/1/review" -H "Content-Type: application/json" -d '{"status":"approved","reviewer":"native_1"}'
+```
+
+3. Export approved:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/export/approved"
+```
+
+Only approved records are exported.
