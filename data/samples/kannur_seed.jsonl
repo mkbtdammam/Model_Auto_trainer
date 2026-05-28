@@ -1,0 +1,4 @@
+{"task_type":"dialect_generation","input_text":"നീ ഇന്ന് വീട്ടിലാണോ?","output_text":"ഇഞ്ഞി ഇന്ന് വീട്ടിലാണോ?","dialect":"Kannur / North Malabar","tone":"casual","domain":"daily_conversation","source_type":"seed_manual"}
+{"task_type":"dialect_normalization","input_text":"ഇഞ്ഞി എവിടെയാ പോണേ?","output_text":"നീ എവിടേക്ക് പോകുകയാണ്?","dialect":"Kannur / North Malabar","tone":"casual","domain":"daily_conversation","source_type":"seed_manual"}
+{"task_type":"translation_en","input_text":"ഇഞ്ഞി ചായ കുടിച്ചോ?","output_text":"Did you drink tea?","dialect":"Kannur / North Malabar","tone":"casual","domain":"daily_conversation","source_type":"seed_manual"}
+{"task_type":"transliteration","input_text":"inji evideya pone?","output_text":"ഇഞ്ഞി എവിടെയാ പോണേ?","dialect":"Kannur / North Malabar","tone":"casual","domain":"daily_conversation","source_type":"seed_manual"}
