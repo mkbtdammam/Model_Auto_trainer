@@ -29,7 +29,49 @@ Open:
 - Swagger: `http://127.0.0.1:8000/docs`
 - Reviewer UI: `http://127.0.0.1:8000/ui`
 
-## 4. Bulk CSV import
+## 4. Start the automation worker
+
+In a **second terminal** (same venv):
+
+```bash
+python -m app.worker
+```
+
+This worker polls the `jobs` table and executes queued jobs.
+
+## 5. Create an automation job
+
+### A) Export approved automatically
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs" -H "Content-Type: application/json" -d '{"job_type":"export_approved","payload":{}}'
+```
+
+Check status:
+
+```bash
+curl "http://127.0.0.1:8000/jobs?limit=20"
+```
+
+### B) Autonomous ingestion of synthetic candidates (no manual paste)
+
+Create a job with candidate list:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs" -H "Content-Type: application/json" -d '{
+  "job_type":"synthetic_ingest",
+  "payload":{
+    "candidates":[
+      {"task_type":"dialect_generation","input_text":"നീ ഇന്ന് വീട്ടിലാണോ?","output_text":"ഇഞ്ഞി ഇന്ന് വീട്ടിലാണോ?"},
+      {"task_type":"dialect_normalization","input_text":"ഇഞ്ഞി എവിടെയാ പോണേ?","output_text":"നീ എവിടേക്ക് പോകുകയാണ്?"}
+    ]
+  }
+}'
+```
+
+The worker will validate + dedupe and store them as `needs_review`.
+
+## 6. Bulk CSV import
 
 1) Download CSV template:
 
@@ -43,7 +85,7 @@ curl http://127.0.0.1:8000/import/template > template.csv
 curl -X POST "http://127.0.0.1:8000/import/csv?forced_status=needs_review" -F "file=@template.csv"
 ```
 
-## 5. Synthetic generation cycle
+## 7. Synthetic generation cycle (manual option)
 
 1) Get prompt:
 
@@ -61,7 +103,7 @@ Use Swagger `POST /synthetic/ingest-jsonl` or run:
 python scripts/ingest_example.py
 ```
 
-## 6. Approve and export
+## 8. Approve and export
 
 Approve/reject in the Reviewer UI:
 
