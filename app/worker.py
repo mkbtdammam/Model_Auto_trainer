@@ -9,10 +9,13 @@ from app.service import (
     insert_training_record,
     list_records,
     list_records_for_judging,
+    list_records_for_observing,
     review_record,
     set_judge_result,
+    set_observer_result,
     stats,
 )
+from app.slang_observer import observe_record
 from app.synthetic_generator import SyntheticCandidate, validate_candidates
 
 
@@ -47,14 +50,35 @@ def _job_synthetic_ingest(payload: dict[str, Any]) -> dict[str, Any]:
     return {"received": len(candidates), "inserted_for_review": inserted, "rejected": rejected}
 
 
-def _job_llm_judge(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run LLM judge on records.
+def _job_observe_slang(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run transparent slang observer.
 
     Payload fields:
-      - limit: int (default 50)
+      - limit: int (default 200)
       - status: needs_review|raw (default needs_review)
-      - stop_on_error: bool (default False)
     """
+
+    limit = int(payload.get("limit", 200))
+    status_str = str(payload.get("status", ReviewStatus.needs_review.value))
+    status = ReviewStatus.needs_review if status_str == "needs_review" else ReviewStatus.raw
+
+    records = list_records_for_observing(limit=limit, status=status)
+    observed = 0
+    failed = 0
+
+    for r in records:
+        try:
+            obs = observe_record(r)
+            set_observer_result(int(r["id"]), obs)
+            observed += 1
+        except Exception:
+            failed += 1
+
+    return {"considered": len(records), "observed": observed, "failed": failed}
+
+
+def _job_llm_judge(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run LLM judge on records."""
 
     limit = int(payload.get("limit", 50))
     status_str = str(payload.get("status", ReviewStatus.needs_review.value))
@@ -71,7 +95,7 @@ def _job_llm_judge(payload: dict[str, Any]) -> dict[str, Any]:
             j = judge_record(r)
             set_judge_result(int(r["id"]), j)
             judged += 1
-        except Exception as exc:
+        except Exception:
             failed += 1
             if stop_on_error:
                 raise
@@ -80,21 +104,23 @@ def _job_llm_judge(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _job_auto_approve(payload: dict[str, Any]) -> dict[str, Any]:
-    """Auto-approve items from the review queue using strict gates.
+    """Auto-approve using policy gates.
 
-    Payload fields:
-      - limit: int (default 200)
-      - min_quality_score: float (default 0.95)
-      - require_no_errors: bool (default True)
-      - source_type: optional str filter (e.g. 'synthetic')
-      - reviewer: str (default 'auto_approve')
-      - notes: optional string
+    Base gates:
+      - min_quality_score
+      - require_no_errors
+      - source_type
 
     Optional judge gates:
-      - require_judge: bool (default False)
-      - min_judge_score: float (default 0.90)
-      - judge_verdict: approve|review|reject (default approve)
-      - require_low_risk: bool (default True) -> requires pii_risk/toxicity_risk low (if judge exists)
+      - require_judge
+      - min_judge_score
+      - judge_verdict
+      - require_low_risk
+
+    Optional observer gates:
+      - require_observer
+      - min_observer_score
+      - require_pattern_keys (list)
     """
 
     limit = int(payload.get("limit", 200))
@@ -104,10 +130,16 @@ def _job_auto_approve(payload: dict[str, Any]) -> dict[str, Any]:
     reviewer = payload.get("reviewer", "auto_approve")
     notes = payload.get("notes", "auto-approved by policy")
 
+    # judge gates
     require_judge = bool(payload.get("require_judge", False))
     min_judge_score = float(payload.get("min_judge_score", 0.90))
     judge_verdict = str(payload.get("judge_verdict", "approve")).lower()
     require_low_risk = bool(payload.get("require_low_risk", True))
+
+    # observer gates
+    require_observer = bool(payload.get("require_observer", False))
+    min_observer_score = float(payload.get("min_observer_score", 0.60))
+    require_pattern_keys = payload.get("require_pattern_keys")
 
     candidates = list_records(status=ReviewStatus.needs_review, limit=limit)
 
@@ -123,6 +155,26 @@ def _job_auto_approve(payload: dict[str, Any]) -> dict[str, Any]:
         if source_type and (r.get("source_type") != source_type):
             skipped += 1
             continue
+
+        if require_observer:
+            oscore = r.get("observer_score")
+            try:
+                oscore = float(oscore)
+            except Exception:
+                oscore = 0.0
+            if oscore < min_observer_score:
+                skipped += 1
+                continue
+            if require_pattern_keys:
+                sig = str(r.get("pattern_signature") or "")
+                ok = True
+                for k in require_pattern_keys:
+                    if k not in sig:
+                        ok = False
+                        break
+                if not ok:
+                    skipped += 1
+                    continue
 
         if require_judge:
             if not r.get("judge_verdict"):
@@ -159,6 +211,9 @@ def _job_auto_approve(payload: dict[str, Any]) -> dict[str, Any]:
             "min_quality_score": min_q,
             "require_no_errors": require_no_errors,
             "source_type": source_type,
+            "require_observer": require_observer,
+            "min_observer_score": min_observer_score,
+            "require_pattern_keys": require_pattern_keys,
             "require_judge": require_judge,
             "min_judge_score": min_judge_score,
             "judge_verdict": judge_verdict,
@@ -184,27 +239,24 @@ def _job_export_if_threshold(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _job_autonomy_cycle(payload: dict[str, Any]) -> dict[str, Any]:
-    """One-shot autonomous cycle: judge -> auto_approve -> export_if_threshold.
+    """One-shot autonomous cycle: observe -> judge -> auto_approve -> export_if_threshold."""
 
-    Payload fields:
-      - judge_limit (default 50)
-      - approve_payload: dict forwarded to auto_approve
-      - export_payload: dict forwarded to export_if_threshold
-    """
-
+    observe_limit = int(payload.get("observe_limit", 200))
     judge_limit = int(payload.get("judge_limit", 50))
     approve_payload = payload.get("approve_payload", {})
     export_payload = payload.get("export_payload", {"approved_threshold": 100})
 
+    obs_res = _job_observe_slang({"limit": observe_limit, "status": "needs_review"})
     judge_res = _job_llm_judge({"limit": judge_limit, "status": "needs_review"})
     approve_res = _job_auto_approve(approve_payload)
     export_res = _job_export_if_threshold(export_payload)
 
-    return {"judge": judge_res, "approve": approve_res, "export": export_res}
+    return {"observe": obs_res, "judge": judge_res, "approve": approve_res, "export": export_res}
 
 
 JOB_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "synthetic_ingest": _job_synthetic_ingest,
+    "observe_slang": _job_observe_slang,
     "llm_judge": _job_llm_judge,
     "auto_approve": _job_auto_approve,
     "autonomy_cycle": _job_autonomy_cycle,
