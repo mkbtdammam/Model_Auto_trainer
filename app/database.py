@@ -77,6 +77,12 @@ def init_db() -> None:
         _ensure_column(conn, "training_records", "pattern_signature", "pattern_signature TEXT")
         _ensure_column(conn, "training_records", "observed_at", "observed_at TEXT")
 
+        # LLM observer columns (migrations)
+        _ensure_column(conn, "training_records", "observer_llm_json", "observer_llm_json TEXT")
+        _ensure_column(conn, "training_records", "observer_llm_score", "observer_llm_score REAL")
+        _ensure_column(conn, "training_records", "observer_llm_signature", "observer_llm_signature TEXT")
+        _ensure_column(conn, "training_records", "observed_llm_at", "observed_llm_at TEXT")
+
         conn.execute(create_jobs_sql)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type)")
@@ -102,5 +108,13 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
             item["observer"] = None
     else:
         item["observer"] = None
+
+    if item.get("observer_llm_json"):
+        try:
+            item["observer_llm"] = json.loads(item["observer_llm_json"])
+        except Exception:
+            item["observer_llm"] = None
+    else:
+        item["observer_llm"] = None
 
     return item
