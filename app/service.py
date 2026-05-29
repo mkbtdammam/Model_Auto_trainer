@@ -101,6 +101,28 @@ def set_observer_result(record_id: int, observer: dict) -> None:
         )
 
 
+def list_records_for_llm_observing(limit: int = 50, status: ReviewStatus = ReviewStatus.needs_review) -> list[dict]:
+    """Records that are waiting for LLM slang observer (observer_llm_json is NULL/empty)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM training_records WHERE status=? AND (observer_llm_json IS NULL OR observer_llm_json='') ORDER BY id ASC LIMIT ?",
+            (status.value, limit),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def set_llm_observer_result(record_id: int, observer_llm: dict) -> None:
+    obs_json = json.dumps(observer_llm, ensure_ascii=False)
+    score = observer_llm.get("observer_llm_score")
+    sig = observer_llm.get("pattern_signature") or observer_llm.get("observer_llm_signature")
+
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE training_records SET observer_llm_json=?, observer_llm_score=?, observer_llm_signature=?, observed_llm_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (obs_json, score, sig, record_id),
+        )
+
+
 def review_record(record_id: int, payload: ReviewUpdate) -> dict:
     with get_connection() as conn:
         existing = conn.execute("SELECT * FROM training_records WHERE id = ?", (record_id,)).fetchone()
