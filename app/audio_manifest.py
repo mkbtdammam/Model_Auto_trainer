@@ -19,13 +19,6 @@ def _save_index(idx: dict[str, Any]) -> None:
 
 
 def create_audio_item(meta: dict[str, Any]) -> dict[str, Any]:
-    """Create an audio item record in a local JSON index.
-
-    This is a temporary storage backend used when DB migrations are blocked.
-    Required keys in meta:
-      - source_type
-      - raw_path
-    """
     idx = _load_index()
     audio_id = int(idx.get("next_id", 1))
     idx["next_id"] = audio_id + 1
@@ -58,6 +51,18 @@ def update_audio_item(audio_id: int, patch: dict[str, Any]) -> Optional[dict[str
     idx["by_id"] = by_id
     _save_index(idx)
     return rec
+
+
+def set_audio_prosody(audio_id: int, prosody: dict[str, Any], signature: str, score: float) -> Optional[dict[str, Any]]:
+    return update_audio_item(
+        audio_id,
+        {
+            "prosody": prosody,
+            "prosody_signature": signature,
+            "prosody_score": float(score),
+            "status": "prosody_done",
+        },
+    )
 
 
 def list_audio_items(status: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
