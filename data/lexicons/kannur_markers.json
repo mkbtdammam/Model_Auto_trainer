@@ -1,0 +1,22 @@
+{
+  "version": "0.1",
+  "dialect": "Kannur / North Malabar",
+  "markers": [
+    {
+      "key": "inji",
+      "forms": ["ഇഞ്ഞി", "inji"],
+      "type": "pronoun",
+      "meaning": "2nd person singular (you)",
+      "why": "Local Kannur/North Malabar conversational pronoun used instead of standard 'നീ' (nee).",
+      "notes": "Seed marker from project examples; expand with native-speaker validated variants."
+    }
+  ],
+  "patterns": [
+    {
+      "key": "manglish_code_mix",
+      "type": "script_pattern",
+      "why": "Kannur slang datasets often include Manglish (Latin) spellings in chats; keep separate to avoid confusing the model.",
+      "notes": "Detected when Latin characters appear in a record."
+    }
+  ]
+}
