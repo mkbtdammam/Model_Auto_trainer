@@ -56,6 +56,29 @@ def list_records(status: Optional[ReviewStatus] = None, limit: int = 50) -> list
     return [row_to_dict(row) for row in rows]
 
 
+def list_records_for_judging(limit: int = 100, status: ReviewStatus = ReviewStatus.needs_review) -> list[dict]:
+    """Records that are waiting for LLM judge (judge_verdict is NULL/empty)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM training_records WHERE status=? AND (judge_verdict IS NULL OR judge_verdict='') ORDER BY id ASC LIMIT ?",
+            (status.value, limit),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def set_judge_result(record_id: int, judge: dict) -> None:
+    judge_json = json.dumps(judge, ensure_ascii=False)
+    score = judge.get("judge_score")
+    verdict = judge.get("verdict")
+    reason = judge.get("reason")
+
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE training_records SET judge_json=?, judge_score=?, judge_verdict=?, judge_reason=?, judged_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (judge_json, score, verdict, reason, record_id),
+        )
+
+
 def review_record(record_id: int, payload: ReviewUpdate) -> dict:
     with get_connection() as conn:
         existing = conn.execute("SELECT * FROM training_records WHERE id = ?", (record_id,)).fetchone()
