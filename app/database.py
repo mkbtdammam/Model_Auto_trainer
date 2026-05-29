@@ -64,12 +64,18 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_training_records_status ON training_records(status)")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_training_records_duplicate_key ON training_records(duplicate_key)")
 
-        # Add judge columns (migrations)
+        # Judge columns (migrations)
         _ensure_column(conn, "training_records", "judge_json", "judge_json TEXT")
         _ensure_column(conn, "training_records", "judge_score", "judge_score REAL")
         _ensure_column(conn, "training_records", "judge_verdict", "judge_verdict TEXT")
         _ensure_column(conn, "training_records", "judge_reason", "judge_reason TEXT")
         _ensure_column(conn, "training_records", "judged_at", "judged_at TEXT")
+
+        # Slang observer columns (migrations)
+        _ensure_column(conn, "training_records", "observer_json", "observer_json TEXT")
+        _ensure_column(conn, "training_records", "observer_score", "observer_score REAL")
+        _ensure_column(conn, "training_records", "pattern_signature", "pattern_signature TEXT")
+        _ensure_column(conn, "training_records", "observed_at", "observed_at TEXT")
 
         conn.execute(create_jobs_sql)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
@@ -80,6 +86,7 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     if "validation_errors" in item:
         item["validation_errors"] = json.loads(item.get("validation_errors") or "[]")
+
     if item.get("judge_json"):
         try:
             item["judge"] = json.loads(item["judge_json"])
@@ -87,4 +94,13 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
             item["judge"] = None
     else:
         item["judge"] = None
+
+    if item.get("observer_json"):
+        try:
+            item["observer"] = json.loads(item["observer_json"])
+        except Exception:
+            item["observer"] = None
+    else:
+        item["observer"] = None
+
     return item
