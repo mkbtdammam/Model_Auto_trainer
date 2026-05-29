@@ -79,6 +79,28 @@ def set_judge_result(record_id: int, judge: dict) -> None:
         )
 
 
+def list_records_for_observing(limit: int = 200, status: ReviewStatus = ReviewStatus.needs_review) -> list[dict]:
+    """Records that are waiting for slang observer (observer_json is NULL/empty)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM training_records WHERE status=? AND (observer_json IS NULL OR observer_json='') ORDER BY id ASC LIMIT ?",
+            (status.value, limit),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def set_observer_result(record_id: int, observer: dict) -> None:
+    obs_json = json.dumps(observer, ensure_ascii=False)
+    score = observer.get("observer_score")
+    sig = observer.get("pattern_signature")
+
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE training_records SET observer_json=?, observer_score=?, pattern_signature=?, observed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (obs_json, score, sig, record_id),
+        )
+
+
 def review_record(record_id: int, payload: ReviewUpdate) -> dict:
     with get_connection() as conn:
         existing = conn.execute("SELECT * FROM training_records WHERE id = ?", (record_id,)).fetchone()
