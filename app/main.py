@@ -1,6 +1,7 @@
 import json
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -14,7 +15,10 @@ from app.models import ReviewStatus, ReviewUpdate, TaskType, TrainingRecordCreat
 from app.service import export_approved, insert_training_record, is_duplicate_error, list_records, review_record, stats
 from app.synthetic_generator import build_generation_prompt, parse_jsonl_candidates, validate_candidates
 
-app = FastAPI(title="Model Auto Trainer", version="0.5.0")
+# Load .env for local dev
+load_dotenv(override=False)
+
+app = FastAPI(title="Model Auto Trainer", version="0.5.1")
 
 
 class SyntheticJsonlIngestRequest(BaseModel):
