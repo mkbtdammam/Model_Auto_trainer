@@ -1,9 +1,12 @@
 import time
+from pathlib import Path
 from typing import Any, Callable
 
+from app.audio_manifest import list_audio_items, set_audio_prosody
 from app.jobs import fetch_next_queued, set_done, set_failed, set_running
 from app.judge import judge_record
 from app.models import ReviewStatus, ReviewUpdate, TaskType
+from app.prosody_features import extract_prosody
 from app.service import (
     export_approved,
     insert_training_record,
@@ -73,14 +76,6 @@ def _job_observe_slang(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _job_observe_slang_llm(payload: dict[str, Any]) -> dict[str, Any]:
-    """Deep observer using LLM. Stores rich explanations, variants, contrasts, and approver rules.
-
-    Payload fields:
-      - limit: int (default 20)
-      - status: needs_review|raw (default needs_review)
-      - stop_on_error: bool (default False)
-    """
-
     limit = int(payload.get("limit", 20))
     status_str = str(payload.get("status", ReviewStatus.needs_review.value))
     stop_on_error = bool(payload.get("stop_on_error", False))
@@ -128,6 +123,40 @@ def _job_llm_judge(payload: dict[str, Any]) -> dict[str, Any]:
     return {"considered": len(records), "judged": judged, "failed": failed}
 
 
+def _job_audio_prosody(payload: dict[str, Any]) -> dict[str, Any]:
+    limit = int(payload.get("limit", 20))
+    status = payload.get("status")
+    only_wav = bool(payload.get("only_wav", True))
+
+    items = list_audio_items(status=status, limit=limit)
+
+    done = 0
+    skipped = 0
+    failed = 0
+
+    for it in items:
+        try:
+            raw_path = str(it.get("raw_path") or "")
+            if not raw_path:
+                skipped += 1
+                continue
+
+            ext = raw_path.split(".")[-1].lower()
+            if only_wav and ext != "wav":
+                skipped += 1
+                continue
+
+            p = Path(raw_path)
+            res = extract_prosody(p)
+
+            set_audio_prosody(int(it["id"]), prosody=res.features, signature=res.signature, score=res.score)
+            done += 1
+        except Exception:
+            failed += 1
+
+    return {"considered": len(items), "done": done, "skipped": skipped, "failed": failed}
+
+
 def _job_auto_approve(payload: dict[str, Any]) -> dict[str, Any]:
     limit = int(payload.get("limit", 200))
     min_q = float(payload.get("min_quality_score", 0.95))
@@ -136,18 +165,15 @@ def _job_auto_approve(payload: dict[str, Any]) -> dict[str, Any]:
     reviewer = payload.get("reviewer", "auto_approve")
     notes = payload.get("notes", "auto-approved by policy")
 
-    # judge gates
     require_judge = bool(payload.get("require_judge", False))
     min_judge_score = float(payload.get("min_judge_score", 0.90))
     judge_verdict = str(payload.get("judge_verdict", "approve")).lower()
     require_low_risk = bool(payload.get("require_low_risk", True))
 
-    # observer gates
     require_observer = bool(payload.get("require_observer", False))
     min_observer_score = float(payload.get("min_observer_score", 0.60))
     require_pattern_keys = payload.get("require_pattern_keys")
 
-    # LLM observer gates
     require_observer_llm = bool(payload.get("require_observer_llm", False))
     min_observer_llm_score = float(payload.get("min_observer_llm_score", 0.75))
 
@@ -261,8 +287,6 @@ def _job_export_if_threshold(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _job_autonomy_cycle(payload: dict[str, Any]) -> dict[str, Any]:
-    """One-shot autonomous cycle: observe(rule) -> observe(LLM) -> judge -> auto_approve -> export_if_threshold."""
-
     observe_limit = int(payload.get("observe_limit", 200))
     observe_llm_limit = int(payload.get("observe_llm_limit", 20))
     judge_limit = int(payload.get("judge_limit", 50))
@@ -283,6 +307,7 @@ JOB_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "observe_slang": _job_observe_slang,
     "observe_slang_llm": _job_observe_slang_llm,
     "llm_judge": _job_llm_judge,
+    "audio_prosody": _job_audio_prosody,
     "auto_approve": _job_auto_approve,
     "autonomy_cycle": _job_autonomy_cycle,
     "export_approved": _job_export_approved,
