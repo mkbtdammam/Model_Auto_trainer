@@ -8,11 +8,13 @@ from pydantic import BaseModel, Field
 from app.database import init_db
 from app.importer import csv_template, parse_csv_bytes
 from app.jobs import enqueue, get_job, list_jobs
+from app.media_store import save_blob
+from app.audio_manifest import create_audio_item, get_audio_item, list_audio_items
 from app.models import ReviewStatus, ReviewUpdate, TaskType, TrainingRecordCreate
 from app.service import export_approved, insert_training_record, is_duplicate_error, list_records, review_record, stats
 from app.synthetic_generator import build_generation_prompt, parse_jsonl_candidates, validate_candidates
 
-app = FastAPI(title="Model Auto Trainer", version="0.4.0")
+app = FastAPI(title="Model Auto Trainer", version="0.5.0")
 
 
 class SyntheticJsonlIngestRequest(BaseModel):
@@ -142,6 +144,51 @@ def import_csv(
         "rejected": rejected,
         "rejected_rows": rejected_rows,
     }
+
+
+# --- Audio (MVP: upload + manifest) ---
+
+ALLOWED_MEDIA_EXT = {"wav", "flac", "mp3", "mp4", "webm", "mkv", "m4a", "aac"}
+MAX_MEDIA_BYTES = 50 * 1024 * 1024  # 50MB MVP
+
+
+@app.post("/audio/upload")
+def audio_upload(file: UploadFile = File(...)) -> dict:
+    data = file.file.read()
+    if len(data) > MAX_MEDIA_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    original_name = file.filename or "upload.bin"
+    ext = (original_name.split(".")[-1] or "").lower()
+    if ext not in ALLOWED_MEDIA_EXT:
+        raise HTTPException(status_code=400, detail=f"File type not allowed: {ext}")
+
+    path, sha = save_blob(original_name, data)
+
+    meta = {
+        "source_type": "upload",
+        "raw_path": str(path),
+        "sha256_raw": sha,
+        "original_filename": original_name,
+        "bytes_raw": len(data),
+        "status": "uploaded",
+    }
+
+    rec = create_audio_item(meta)
+    return rec
+
+
+@app.get("/audio")
+def audio_list(status: Optional[str] = None, limit: int = 50) -> list[dict]:
+    return list_audio_items(status=status, limit=limit)
+
+
+@app.get("/audio/{audio_id}")
+def audio_get(audio_id: int) -> dict:
+    rec = get_audio_item(audio_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Audio item not found")
+    return rec
 
 
 # --- Automation API (Job queue) ---
